@@ -1,0 +1,12 @@
+# Entorno virtual
+.venv/
+__pycache__/
+*.pyc
+
+# Variables de entorno (Credenciales y API Keys)
+.env
+
+# Archivos de configuración locales de VS Code u OS
+.vscode/
+.DS_Store
+Thumbs.db
