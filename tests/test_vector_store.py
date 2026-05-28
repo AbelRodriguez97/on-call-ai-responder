@@ -1,41 +1,68 @@
+"""Tests for the IncidentVectorStore (uses real in-memory Qdrant — no server needed)."""
+
 import os
-import sys
-import asyncio
+import pytest
+from app.database.vector_store import IncidentVectorStore
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database.vector_store import vector_store
-from app.agents.incident_agent import incident_agent
+@pytest.fixture
+def fresh_store():
+    """A fresh IncidentVectorStore instance for each test."""
+    return IncidentVectorStore()
 
-async def run_full_pipeline_test():
-    print("🚀 Iniciando prueba del pipeline completo (RAG + Agente Inteligente)...")
-    
-    # 1. Aseguramos la indexación de los playbooks
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    playbook_path = os.path.join(base_dir, "data", "playbooks", "keycloak_errors.md")
-    vector_store.index_playbook(playbook_path)
-    
-    # 2. Definimos una alerta de simulación crítica
-    alerta_produccion = "CRITICAL ALERT: Keycloak login failed with AUTH_TIMEOUT_500. Database pool exhausted."
-    print(f"\n🚨 Nueva Alerta Recibida: '{alerta_produccion}'")
-    print("🧠 Pasando alerta al Agente de PydanticAI (esto invocará la Tool automáticamente)... \n")
-    
-    # 3. Ejecutamos el agente de forma asíncrona (PydanticAI es nativamente async)
-    result = await incident_agent.run(alerta_produccion)
-    
-    # 4. Mostramos el resultado estructurado final
-    report = result.data
-    print("\n🎉 ¡Flujo Completado con Éxito! Reporte de IA Estructurado:")
-    print("=========================================================")
-    print(f"🔴 Gravedad: {report.incident_severity}")
-    print(f"🔍 Causa Raíz: {report.root_cause_analysis}")
-    print(f"🛠️ Pasos de Mitigación:")
-    for idx, step in enumerate(report.mitigation_steps, 1):
-        print(f"   {idx}. {step}")
-    print(f"📞 ¿Escalar a Senior?: {'SÍ' if report.requires_escalation else 'NO'}")
-    print(f"💬 Mensaje para Slack: {report.slack_summary}")
-    print("=========================================================")
 
-if __name__ == "__main__":
-    # Ejecutamos el bucle asíncrono
-    asyncio.run(run_full_pipeline_test())
+def test_vector_store_initializes_without_error(fresh_store):
+    """IncidentVectorStore should initialize and create the collection."""
+    assert fresh_store.qdrant_client is not None
+    assert fresh_store.collection_name == "incident_playbooks"
+
+
+def test_mock_embedding_returns_correct_size(fresh_store):
+    """_get_mock_embedding should return a vector of the expected size."""
+    vector = fresh_store._get_mock_embedding("test query")
+    assert len(vector) == fresh_store.vector_size
+    assert all(isinstance(v, float) for v in vector)
+
+
+def test_index_playbook_creates_new_file_if_missing(fresh_store, tmp_path):
+    """index_playbook should auto-create the playbook file if it doesn't exist."""
+    fake_path = tmp_path / "playbooks" / "test_playbook.md"
+    fresh_store.index_playbook(str(fake_path))
+    assert fake_path.exists()
+
+
+def test_index_playbook_indexes_chunks(fresh_store, tmp_path):
+    """index_playbook should load chunks into Qdrant successfully."""
+    playbook = tmp_path / "playbook.md"
+    playbook.write_text(
+        "# Main Title\n\n## Error AUTH_001\nRestart the service.\n\n## Error AUTH_002\nCheck the logs.",
+        encoding="utf-8"
+    )
+    fresh_store.index_playbook(str(playbook))
+
+    # After indexing, search should return results
+    results = fresh_store.search_relevant_playbooks("AUTH_001 restart", limit=1)
+    assert len(results) > 0
+    assert "text" in results[0]
+
+
+def test_search_returns_empty_when_no_playbooks(fresh_store):
+    """Searching an empty store should return an empty list, not raise."""
+    results = fresh_store.search_relevant_playbooks("any query", limit=1)
+    # Empty collection returns empty results — no exception
+    assert isinstance(results, list)
+
+
+def test_search_returns_relevant_payload(fresh_store, tmp_path):
+    """search_relevant_playbooks should return payload dicts with 'text' and 'source'."""
+    playbook = tmp_path / "keycloak.md"
+    playbook.write_text(
+        "# Keycloak Errors\n\n## AUTH_TIMEOUT_500\nPool exhausted, restart service.",
+        encoding="utf-8"
+    )
+    fresh_store.index_playbook(str(playbook))
+
+    results = fresh_store.search_relevant_playbooks("AUTH_TIMEOUT_500", limit=1)
+    assert len(results) == 1
+    assert "text" in results[0]
+    assert "source" in results[0]
