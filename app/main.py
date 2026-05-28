@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.database.vector_store import vector_store
 from app.agents.incident_agent import incident_agent, IncidentReport
+from app.notifications.slack import slack_notifier
 import uvicorn
 
 # 1. Definimos el ciclo de vida (Lifespan) para indexar el manual al arrancar
@@ -27,10 +28,23 @@ app = FastAPI(
 
 # 3. Definimos el esquema del Webhook o JSON de entrada
 class IncomingAlert(BaseModel):
-    alert_id: str = Field(..., example="ALR-2026-992")
-    source_service: str = Field(..., example="Keycloak-Identity-Provider")
-    raw_message: str = Field(..., example="CRITICAL: Authentication failed with AUTH_TIMEOUT_500. Database pool exhausted.")
-    environment: str = Field(..., example="production")
+    alert_id: str
+    source_service: str
+    raw_message: str
+    environment: str
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "alert_id": "ALR-2026-992",
+                    "source_service": "Keycloak-Identity-Provider",
+                    "raw_message": "CRITICAL: Authentication failed with AUTH_TIMEOUT_500. Database pool exhausted.",
+                    "environment": "production",
+                }
+            ]
+        }
+    }
 
 @app.get("/", tags=["Health Check"])
 def read_root():
@@ -47,22 +61,29 @@ async def process_incoming_alert(alert: IncomingAlert):
     """
     Endpoint crítico: Ingiere una alerta de producción, invoca al agente autónomo
     para que realice el triaje usando RAG sobre Qdrant y devuelve el reporte estructurado.
+    Si requires_escalation es True, envía automáticamente una notificación a Slack.
     """
     try:
-        # Preparamos un contexto enriquecido para el input del agente
         agent_input = (
             f"Alerta ID: {alert.alert_id}\n"
             f"Servicio Afectado: {alert.source_service}\n"
             f"Entorno: {alert.environment}\n"
             f"Mensaje de Error: {alert.raw_message}"
         )
-        
-        # Invocamos al agente nativo de forma asíncrona
-        agent_result = await incident_agent.run(agent_input)
-        
-        # Devolvemos directamente el objeto IncidentReport validado
-        return agent_result.data
 
+        agent_result = await incident_agent.run(agent_input)
+        report = agent_result.data
+
+        # Send Slack notification if escalation is required  ← NUEVO
+        if report.requires_escalation:                       # ← NUEVO
+            slack_notifier.send_incident_alert(              # ← NUEVO
+                report=report,
+                alert_id=alert.alert_id,
+                source_service=alert.source_service,
+                environment=alert.environment,
+            )
+
+        return report
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
