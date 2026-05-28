@@ -16,10 +16,11 @@ class IncidentVectorStore:
         # vamos a usar un vectorizador de juguete (simulado) para validar el flujo RAG,
         # o puedes usar Gemini Chat después. Esto asegura que Qdrant no falle.
         self.vector_size = 4
-        self.qdrant_client.recreate_collection(
-            collection_name=self.collection_name,
-            vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
-        )
+        if not self.qdrant_client.collection_exists(self.collection_name):
+            self.qdrant_client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
+    )
 
     def _get_mock_embedding(self, text: str) -> list[float]:
         """Genera un vector simulado basado en el texto para evitar el error 404 de la API."""

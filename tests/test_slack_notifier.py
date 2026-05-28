@@ -23,7 +23,9 @@ def notifier_with_url():
 
 
 @pytest.fixture
-def notifier_without_url():
+def notifier_without_url(monkeypatch):
+    """SlackNotifier with no webhook URL, even if .env has one configured."""
+    monkeypatch.setattr("app.notifications.slack.settings.SLACK_WEBHOOK_URL", "")
     return SlackNotifier(webhook_url="")
 
 
